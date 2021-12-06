@@ -1,3 +1,20 @@
+# Background
+
+<!-- Describe how forking is currently done in uwsgi -->
+
+# Problem
+
+# Fix
+
+
+Breaking change
+
+# Open Questions
+
+- How can this change be tested?
+
+# Reproduction
+
 The thread state in a worker process can be in an invalid state if a thread is started the master process before uWSGI forks workers. This causes a deadlock to occur when workers are respawned.
 
 Start the uwsgi application with gdb by using the provided Docker build:
@@ -75,3 +92,10 @@ The thread id of the thread being restored matches the thread id of the busy loo
 (gdb) print tstate->thread_id
 $1 = 139976154965760
 ```
+
+# Fix
+
+https://github.com/majorgreys/uwsgi/blob/b1f35720ffa02dd60a8368d312b25be4aafd6a41/plugins/python/python_plugin.c#L227-L230
+
+How are upt_save_key and upt_gil_key used?
+

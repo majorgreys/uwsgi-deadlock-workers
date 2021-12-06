@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
 
+UWSGI=$(dirname $(pyenv which python))/uwsgi
+
 # gdb --args \
-/root/.pyenv/versions/2.7.17-debug/bin/uwsgi --ini /app/uwsgi.ini
+$UWSGI --ini /app/uwsgi.ini

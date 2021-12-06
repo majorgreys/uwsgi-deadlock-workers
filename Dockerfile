@@ -29,15 +29,21 @@ RUN apt-get update \
 RUN git clone https://github.com/pyenv/pyenv.git /root/.pyenv && \
     cd /root/.pyenv && \
     git checkout `git describe --abbrev=0 --tags`
+# install both debug and non-debug versions of cpython for testing
 RUN pyenv install --keep --debug 2.7.17 && \
-    pyenv global 2.7.17-debug
+    pyenv install --keep 2.7.17 && \
+    pyenv global 2.7.17
 COPY uwsgi /src/uwsgi/
+# gdb debugging of cpython when running uwsgi
+# RUN pyenv global 2.7.17-debug
+# ENV CFLAGS=-I/root/.pyenv/versions/2.7.17-debug/include/python2.7
 RUN pip install -e /src/uwsgi
 COPY . /app/
 WORKDIR /app/
 ENV PYTHONPATH=/app/
 # ENV PYTHONTHREADDEBUG=1
 EXPOSE 8080
-COPY ./.gdbinit /root/
+# better gdb defaults
+# COPY ./.gdbinit /root/
 # RUN wget -P ~ https://git.io/.gdbinit && pip install pygments
 CMD ["./start.sh"]
