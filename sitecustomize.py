@@ -1,4 +1,3 @@
-import os
 import threading
 import time
 
@@ -9,7 +8,7 @@ def run(period):
         % (threading.current_thread().ident, period)
     )
     st = time.time()
-    while time.time() < st + 5:
+    while time.time() < st + period:
         pass
     print("[thread=%u] run: finished." % (threading.current_thread().ident))
 

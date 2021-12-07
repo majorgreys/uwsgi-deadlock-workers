@@ -1,4 +1,0 @@
-[submodule "uwsgi"]
-	path = uwsgi
-	url = git@github.com:majorgreys/uwsgi.git
-	branch = fix-worker-deadlock

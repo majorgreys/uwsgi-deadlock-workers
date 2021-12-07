@@ -29,21 +29,25 @@ RUN apt-get update \
 RUN git clone https://github.com/pyenv/pyenv.git /root/.pyenv && \
     cd /root/.pyenv && \
     git checkout `git describe --abbrev=0 --tags`
+ARG PY=2.7.17
 # install both debug and non-debug versions of cpython for testing
-RUN pyenv install --keep --debug 2.7.17 && \
-    pyenv install --keep 2.7.17 && \
-    pyenv global 2.7.17
-COPY uwsgi /src/uwsgi/
+RUN pyenv install --keep --debug $PY && \
+    pyenv install --keep $PY && \
+    pyenv global $PY
 # gdb debugging of cpython when running uwsgi
 # RUN pyenv global 2.7.17-debug
 # ENV CFLAGS=-I/root/.pyenv/versions/2.7.17-debug/include/python2.7
-RUN pip install -e /src/uwsgi
+ARG UWSGI_GIT=majorgreys/uwsgi@4fe3802912726012e632174292ccf765e318f494
+RUN pip install git+https://github.com/$UWSGI_GIT
+# For local development
+# COPY ./uwsgi /src/uwsgi/
+# RUN pip install /src/uwsgi
 COPY . /app/
 WORKDIR /app/
+# Ensures that sitecustomize.py will be loaded when Python interpreter is initialized
 ENV PYTHONPATH=/app/
-# ENV PYTHONTHREADDEBUG=1
 EXPOSE 8080
 # better gdb defaults
 # COPY ./.gdbinit /root/
-# RUN wget -P ~ https://git.io/.gdbinit && pip install pygments
+RUN wget -P ~ https://git.io/.gdbinit && pip install pygments
 CMD ["./start.sh"]
