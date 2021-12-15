@@ -1,29 +1,68 @@
-# Background
+# Issue
 
-<!-- Describe how forking is currently done in uwsgi -->
+If a thread is started before a worker child processes is forked, the worker can fail to respawn. In the context of CPython, the thread state must be updated after forking if there will be calls to the Python interpreter. This is handled by `PyOS_AfterFork_Child` in Python 3 and `PyOS_AfterFork` in Python 2. In the uWSGI lifecycle of a forked worker child process, there is an attempt to acquire the GIL in `master_fixup` before `PyOS_AfterFork[_Child]` is called. This leads to a deadlock which explains the failure for workers to respawn.
 
-# Problem
+This issue is a duplicate of:
 
-# Fix
+- https://github.com/unbit/uwsgi/issues/1149
+- https://github.com/unbit/uwsgi/issues/1369
 
+This issue includes a minimal reproduction of a deadlock worker by starting a thread in a `sitecustomize.py` that enters a busy loop. This ensures that the current thread in the Python interpreter is not the main thread when uWSGI forks the child. The result is an invalid thread state in the child process.
 
-Breaking change
+## Reproduction
 
-# Open Questions
+We install the debug version of CPython so that we can debug uWSGI and the Python plugin with gdb. 
 
-- How can this change be tested?
+The reproduction consists of a simple hello world wsgi application and a `sitecustomize` that starts a thread which enters a busy loop for 5 seconds. 
 
-# Reproduction
+The `uwsgi.ini` enables a master process and threads along with one worker process with a max worker lifetime of 15 seconds. This allows us to more easily observe the failed attempt to respawn the worker process.
 
-The thread state in a worker process can be in an invalid state if a thread is started the master process before uWSGI forks workers. This causes a deadlock to occur when workers are respawned.
-
-Start the uwsgi application with gdb by using the provided Docker build:
+To build and run the reproduction with Python 2.7 and uWSGI 2.0.20, run:
 
 ```
-docker run --rm -it (docker build -q .)
+docker run --rm -it $(docker build -q .)
 ```
 
-# Investigation
+If the worker was respawning properly, we would expect the output of the process to be:
+
+```
+*** uWSGI is running in multiple interpreter mode ***
+spawned uWSGI master process (pid: 35)
+spawned uWSGI worker 1 (pid: 37, cores: 1)
+spawned uWSGI http 1 (pid: 38)
+[thread=140112973076224] run: finished.
+worker 1 lifetime reached, it was running for 16 second(s)
+Respawned uWSGI worker 1 (new pid: 39)
+worker 1 lifetime reached, it was running for 16 second(s)
+Respawned uWSGI worker 1 (new pid: 40)
+```
+
+However, the worker never respawns with uWSGI 2.0.2 in this reproduction.
+
+We can test out the fix provided in #1234 which shows the worker to respawn as expected.
+
+```
+docker run --rm -it $(docker build -q --build-arg UWSGI_GIT=majorgreys/uwsgi@4fe3802912726012e632174292ccf765e318f494 .)
+```
+
+
+# Pull Request
+
+This PR adds `pre_uwsgi_fork` and `post_uwsgi_fork` to `uwsgi_plugin` in order to ensure that any necessary changes can be made before and after the call to `uwsgi_fork`. This is used here by the Python plugin to modify the Python interpreter state before forking and then again after forking as is done by `os.fork()` in CPython. With the addition of these two functions, we can drop the `master_fixup` plugin hook and the call to `PyOS_AfterFork[_Child]`. Having made these changes, we need to also change existing hooks that had assumed the GIL was in a given state but will now be responsible for acquiring and releasing the GIL when calls are made to the Python interpreter.
+
+Tests are included for the following configurations:
+
+- master https://uwsgi-docs.readthedocs.io/en/latest/Options.html#master
+- workers https://uwsgi-docs.readthedocs.io/en/latest/Options.html#workers
+- enabled threads https://uwsgi-docs.readthedocs.io/en/latest/Options.html#enable-threads
+- single interpeter https://uwsgi-docs.readthedocs.io/en/latest/Options.html#single-interpreter
+- threads https://uwsgi-docs.readthedocs.io/en/latest/Options.html#threads
+- emperor https://uwsgi-docs.readthedocs.io/en/latest/Options.html#emperor
+- spooler https://uwsgi-docs.readthedocs.io/en/latest/Options.html#spooler
+
+Fixes #1234
+
+# Notes
 
 ## Forking and the Python plugin
 
@@ -92,10 +131,3 @@ The thread id of the thread being restored matches the thread id of the busy loo
 (gdb) print tstate->thread_id
 $1 = 139976154965760
 ```
-
-# Fix
-
-https://github.com/majorgreys/uwsgi/blob/b1f35720ffa02dd60a8368d312b25be4aafd6a41/plugins/python/python_plugin.c#L227-L230
-
-How are upt_save_key and upt_gil_key used?
-
