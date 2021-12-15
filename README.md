@@ -1,6 +1,10 @@
 # Issue
 
-If a thread is started before a worker child processes is forked, the worker can fail to respawn. In the context of CPython, the thread state must be updated after forking if there will be calls to the Python interpreter. This is handled by `PyOS_AfterFork_Child` in Python 3 and `PyOS_AfterFork` in Python 2. In the uWSGI lifecycle of a forked worker child process, there is an attempt to acquire the GIL in `master_fixup` before `PyOS_AfterFork[_Child]` is called. This leads to a deadlock which explains the failure for workers to respawn.
+If a thread is started in the master process before the master process forks a worker child process, the worker can fail to respawn. 
+
+In the context of CPython, the thread state must be updated after forking if there will be calls to the Python interpreter. This is handled by `PyOS_AfterFork_Child` in Python 3 and `PyOS_AfterFork` in Python 2. 
+
+In the uWSGI lifecycle in prefork mode, there is an attempt to acquire the GIL in `master_fixup` before `PyOS_AfterFork[_Child]` is called in `uwsgi_python_post_fork`. This leads to a deadlock which explains the failure for workers to respawn.
 
 This issue is a duplicate of:
 
@@ -48,7 +52,14 @@ docker run --rm -it $(docker build -q --build-arg UWSGI_GIT=majorgreys/uwsgi@4fe
 
 # Pull Request
 
-This PR adds `pre_uwsgi_fork` and `post_uwsgi_fork` to `uwsgi_plugin` in order to ensure that any necessary changes can be made before and after the call to `uwsgi_fork`. This is used here by the Python plugin to modify the Python interpreter state before forking and then again after forking as is done by `os.fork()` in CPython. With the addition of these two functions, we can drop the `master_fixup` plugin hook and the call to `PyOS_AfterFork[_Child]`. Having made these changes, we need to also change existing hooks that had assumed the GIL was in a given state but will now be responsible for acquiring and releasing the GIL when calls are made to the Python interpreter.
+This PR adds `pre_uwsgi_fork` and `post_uwsgi_fork` to `uwsgi_plugin` in order to ensure that any necessary changes can be made before and after the call to `uwsgi_fork`. We use these two plugin hooks in the Python plugin to modify the Python interpreter state before and after forking as is done by `os.fork()` in CPython. 
+
+With the addition of these two functions, we make the following changes to the other hooks:
+
+- `uwsgi_python_init_apps` no longer is called when the GIL has been acquired so is now responsible for acquiring and releasing the GIL always (not just when app is not loaded lazily). 
+- `uwsgi_python_preinit_apps` must also acquire and release the GIL 
+- `PyOS_AfterFork[_Child]` does not need to be called in `uwsgi_python_post_fork` as it will have been taken care of in `post_uwsgi_fork`
+- `uwsgi_python_master_fixup` can be safely removed as the post fork releasing of the GIL in the master and worker process will be handled elsewhere
 
 Tests are included for the following configurations:
 
@@ -66,7 +77,7 @@ Fixes #1234
 
 ## Forking and the Python plugin
 
-If `PyOS_AfterFork()` is called immediately following `uwsgi_fork()`, uwsgi aborts with a fatal error raised when using a debug version of cPython.
+If `PyOS_AfterFork()` is called immediately following `uwsgi_fork()`, uwsgi aborts with a fatal error raised when using a debug version of CPython.
 
 ``` 
 Fatal Python error: Invalid thread state for this thread
