@@ -1,25 +1,27 @@
 # Issue
 
-If a thread is started in the master process before the master process forks a worker child process, the worker can fail to respawn. 
+## Problem
 
-In the context of CPython, the thread state must be updated after forking if there will be calls to the Python interpreter. This is handled by `PyOS_AfterFork_Child` in Python 3 and `PyOS_AfterFork` in Python 2. 
-
-In the uWSGI lifecycle in prefork mode, there is an attempt to acquire the GIL in `master_fixup` before `PyOS_AfterFork[_Child]` is called in `uwsgi_python_post_fork`. This leads to a deadlock which explains the failure for workers to respawn.
+If a thread is started in the master (parent) process before the master process forks a worker (child) process, the worker can fail to respawn when the child process does not gracefully shutdown. This happens when the child process deadlocks on acquiring the GIL during the initialization of a worker child process in uWSGI. 
 
 This issue is a duplicate of:
 
 - https://github.com/unbit/uwsgi/issues/1149
 - https://github.com/unbit/uwsgi/issues/1369
 
-This issue includes a minimal reproduction of a deadlock worker by starting a thread in a `sitecustomize.py` that enters a busy loop. This ensures that the current thread in the Python interpreter is not the main thread when uWSGI forks the child. The result is an invalid thread state in the child process.
+## Root cause
+
+In CPython, the thread state of a child process and its parent process must be updated after forking, if there will be calls to the Python interpreter. This is handled by `PyOS_AfterFork_Child` in Python 3 and `PyOS_AfterFork` in Python 2. 
+
+In uWSGI, there is an attempt to acquire the GIL in the `master_fixup` Python plugin hook before `PyOS_AfterFork[_Child]` is called in `post_fork` hook. This leads to a deadlock which explains the failure for workers to respawn.
 
 ## Reproduction
 
-We install the debug version of CPython so that we can debug uWSGI and the Python plugin with gdb. 
+This issue can be reliably reproduced by starting a thread in a `sitecustomize.py` that enters a busy loop. This ensures that the current thread in the Python interpreter is not the main thread when uWSGI forks a child process. The result is an invalid thread state in the child process, specifically the GIL is locked and will not have been recreated.
 
-The reproduction consists of a simple hello world wsgi application and a `sitecustomize` that starts a thread which enters a busy loop for 5 seconds. 
-
-The `uwsgi.ini` enables a master process and threads along with one worker process with a max worker lifetime of 15 seconds. This allows us to more easily observe the failed attempt to respawn the worker process.
+- We install the debug version of CPython so that we can debug uWSGI and the Python plugin with gdb. 
+- The reproduction consists of a simple hello world wsgi application and a `sitecustomize` that starts a thread which enters a busy loop for 5 seconds. 
+- The `uwsgi.ini` enables a master process and threads along with one worker process with a max worker lifetime of 15 seconds. This allows us to more easily observe the failed attempt to respawn the worker process.
 
 To build and run the reproduction with Python 2.7 and uWSGI 2.0.20, run:
 
@@ -41,9 +43,34 @@ worker 1 lifetime reached, it was running for 16 second(s)
 Respawned uWSGI worker 1 (new pid: 40)
 ```
 
-However, the worker never respawns with uWSGI 2.0.2 in this reproduction.
+However, uWSGI will hang waiting on the worker to respawn with uWSGI 2.0.2 in this reproduction:
 
-We can test out the fix provided in #1234 which shows the worker to respawn as expected.
+```
+*** uWSGI is running in multiple interpreter mode ***
+spawned uWSGI master process (pid: 36)
+spawned uWSGI worker 1 (pid: 38, cores: 1)
+spawned uWSGI http 1 (pid: 39)
+[thread=140082567735040] run: finished.
+worker 1 lifetime reached, it was running for 16 second(s)
+```
+
+If we attach to the process with `gdb` we find that the cause is a deadlock on the GIL acquisition:
+
+```
+#0  futex_abstimed_wait_cancelable (private=0, abstime=0x0, expected=0, futex_word=0x560bef494fd0) at ../sysdeps/unix/sysv/linux/futex-internal.h:205
+#1  do_futex_wait (sem=sem@entry=0x560bef494fd0, abstime=0x0) at sem_waitcommon.c:111
+#2  0x00007f1348060988 in __new_sem_wait_slow (sem=sem@entry=0x560bef494fd0, abstime=0x0) at sem_waitcommon.c:181
+#3  0x00007f13480609f9 in __new_sem_wait (sem=sem@entry=0x560bef494fd0) at sem_wait.c:42
+#4  0x00007f13475f72c4 in PyThread_acquire_lock (lock=0x560bef494fd0, waitflag=1) at Python/thread_pthread.h:356
+#5  0x0000560bee9d30d9 in gil_real_get ()
+#6  0x0000560bee9cba6c in uwsgi_python_master_fixup ()
+#7  0x0000560bee97f5c6 in uwsgi_respawn_worker ()
+#8  0x0000560bee97d83b in master_loop ()
+#9  0x0000560bee9bb78a in uwsgi_run ()
+#10 0x0000560bee968e7e in main ()
+```
+
+We can test out development branches with this reproduction using:
 
 ```
 docker run --rm -it $(docker build -q --build-arg UWSGI_GIT=majorgreys/uwsgi@4fe3802912726012e632174292ccf765e318f494 .)
