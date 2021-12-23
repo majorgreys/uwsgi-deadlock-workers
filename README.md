@@ -4,7 +4,21 @@ If a thread is started in the master process before the master process forks a w
 
 In the context of CPython, the thread state must be updated after forking if there will be calls to the Python interpreter. This is handled by `PyOS_AfterFork_Child` in Python 3 and `PyOS_AfterFork` in Python 2. 
 
-In the uWSGI lifecycle in prefork mode, there is an attempt to acquire the GIL in `master_fixup` before `PyOS_AfterFork[_Child]` is called in `uwsgi_python_post_fork`. This leads to a deadlock which explains the failure for workers to respawn.
+In the uWSGI lifecycle in prefork mode, there is an attempt to acquire the GIL in `master_fixup` before `PyOS_AfterFork[_Child]` is called in `uwsgi_python_post_fork`. This leads to a deadlock which explains the failure for workers to respawn. We can see this in the following backtrace from a deadlocked worker:
+
+```
+#0  futex_abstimed_wait_cancelable (private=0, abstime=0x0, expected=0, futex_word=0x560bef494fd0) at ../sysdeps/unix/sysv/linux/futex-internal.h:205
+#1  do_futex_wait (sem=sem@entry=0x560bef494fd0, abstime=0x0) at sem_waitcommon.c:111
+#2  0x00007f1348060988 in __new_sem_wait_slow (sem=sem@entry=0x560bef494fd0, abstime=0x0) at sem_waitcommon.c:181
+#3  0x00007f13480609f9 in __new_sem_wait (sem=sem@entry=0x560bef494fd0) at sem_wait.c:42
+#4  0x00007f13475f72c4 in PyThread_acquire_lock (lock=0x560bef494fd0, waitflag=1) at Python/thread_pthread.h:356
+#5  0x0000560bee9d30d9 in gil_real_get ()
+#6  0x0000560bee9cba6c in uwsgi_python_master_fixup ()
+#7  0x0000560bee97f5c6 in uwsgi_respawn_worker ()
+#8  0x0000560bee97d83b in master_loop ()
+#9  0x0000560bee9bb78a in uwsgi_run ()
+#10 0x0000560bee968e7e in main ()
+```
 
 This issue is a duplicate of:
 
